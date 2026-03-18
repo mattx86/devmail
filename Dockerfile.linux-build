@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# Builds a Linux x86_64 release binary inside Ubuntu 24.04.
+# Run from the project root with Docker Desktop:
+#
+#   docker build -f Dockerfile.linux-build --output type=local,dest=./dist .
+#
+# The binary will be written to ./dist/devmail
+
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain none --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+# rust-toolchain.toml is the single source of truth for the compiler version.
+# Copying it first lets rustup install exactly that version before the source arrives.
+COPY rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY assets ./assets
+
+RUN cargo build --release
+
+# ── Export stage ──────────────────────────────────────────────────────────────
+FROM scratch AS export
+COPY --from=builder /build/target/release/devmail /devmail

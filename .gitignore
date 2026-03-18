@@ -1,0 +1,4 @@
+/target
+/dist
+*.mbox
+devmail_state.json

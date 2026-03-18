@@ -1,0 +1,28 @@
+# Ubuntu 24.04 container for running and testing devmail.
+#
+# Usage (build the Linux binary first with 'make build-linux'):
+#
+#   docker build -f Dockerfile.test -t devmail-test .
+#   docker run --rm -p 1025:1025 -p 8085:8085 devmail-test
+#
+# Then open http://127.0.0.1:8085 in your browser and point your
+# SMTP client at 127.0.0.1:1025.
+#
+# To test with disk storage:
+#   docker run --rm -p 1025:1025 -p 8085:8085 devmail-test --store
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY dist/devmail /usr/local/bin/devmail
+RUN chmod +x /usr/local/bin/devmail
+
+EXPOSE 1025 8085
+
+ENTRYPOINT ["/usr/local/bin/devmail"]
+# Override listen addresses so ports are reachable via -p from the host.
+# (Default 127.0.0.1 is the container's own loopback and is not port-mapped.)
+CMD ["--smtp-addr", "0.0.0.0:1025", "--http-addr", "0.0.0.0:8085"]

@@ -1,0 +1,33 @@
+[package]
+name        = "devmail"
+version     = "1.0.0"
+edition     = "2021"
+authors     = ["Matt Smith"]
+license     = "MIT"
+description = "Local SMTP sink + webmail UI for development"
+
+[[bin]]
+name = "devmail"
+path = "src/main.rs"
+
+[dependencies]
+tokio              = { version = "=1.37.0",  features = ["full"] }
+axum               = { version = "=0.7.5",   features = ["macros"] }
+tower-http         = { version = "=0.5.2",   features = ["cors"] }
+clap               = { version = "=4.5.4",   features = ["derive", "env"] }
+serde              = { version = "=1.0.202", features = ["derive"] }
+serde_json         = { version = "=1.0.117" }
+mail-parser        = { version = "=0.9.3" }
+chrono             = { version = "=0.4.38",  features = ["serde"] }
+uuid               = { version = "=1.8.0",   features = ["v4", "serde"] }
+indexmap           = { version = "=2.2.6",   features = ["serde"] }
+base64             = { version = "=0.22.1" }
+anyhow             = { version = "=1.0.86" }
+tracing            = { version = "=0.1.40" }
+tracing-subscriber = { version = "=0.3.18", features = ["env-filter"] }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
