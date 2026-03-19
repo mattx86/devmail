@@ -28,6 +28,14 @@ pub struct Config {
     /// Password to protect the webmail UI (also set via DEVMAIL_PASS env var)
     #[arg(long, env = "DEVMAIL_PASS", value_name = "PASSWORD")]
     pub pass: Option<String>,
+
+    /// Delete emails older than N hours on each check (0 = disabled)
+    #[arg(long, default_value_t = 8, value_name = "HOURS")]
+    pub max_age: u64,
+
+    /// Keep only the N most recent emails (0 = disabled)
+    #[arg(long, default_value_t = 50, value_name = "COUNT")]
+    pub max_emails: usize,
 }
 
 impl Config {

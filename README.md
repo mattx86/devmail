@@ -34,6 +34,8 @@ Options:
       --smtp-addr <ADDR>   SMTP listen address [default: 127.0.0.1:1025]
       --http-addr <ADDR>   HTTP listen address [default: 127.0.0.1:8085]
       --pass <PASSWORD>    Password to protect the webmail UI [env: DEVMAIL_PASS]
+      --max-age <HOURS>    Delete emails older than N hours on each check (0 = disabled) [default: 8]
+      --max-emails <COUNT> Keep only the N most recent emails (0 = disabled) [default: 50]
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -109,9 +111,11 @@ Make release zip (requires Git Bash):
 #   devmail-v1.0.0-windows-x86_64\README.md
 ```
 
-### Linux (via Docker Desktop on Windows)
+### Linux
 ```
 ./build.sh build-linux
+# On Linux: uses cargo build --release directly
+# On Windows: uses Docker Desktop
 # Output: dist/devmail  (Linux x86_64 binary)
 
 ./build.sh release-linux

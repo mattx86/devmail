@@ -9,6 +9,35 @@ use clap::Parser;
 use config::Config;
 use store::EmailStore;
 
+/// Enforces email limits once per hour. Sleeps first so startup enforcement
+/// (done in the store constructors) is not immediately repeated.
+async fn periodic_cleanup(store: store::SharedStore) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        store.write().await.enforce_limits();
+    }
+}
+
+/// Builds the SMTP address hint shown in the webmail empty state.
+/// If bound to 0.0.0.0, expands to one `smtp://IP:port` line per IPv4 interface.
+fn build_smtp_hint(smtp_addr: &str) -> String {
+    if let Some(port) = smtp_addr.strip_prefix("0.0.0.0:") {
+        if let Ok(ifaces) = if_addrs::get_if_addrs() {
+            let lines: Vec<String> = ifaces
+                .into_iter()
+                .filter_map(|iface| match iface.addr {
+                    if_addrs::IfAddr::V4(v4) => Some(format!("smtp://{}:{}", v4.ip, port)),
+                    _ => None,
+                })
+                .collect();
+            if !lines.is_empty() {
+                return lines.join("<br>");
+            }
+        }
+    }
+    format!("smtp://{}", smtp_addr)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -24,10 +53,10 @@ async fn main() -> anyhow::Result<()> {
         let path = config.storage_path();
         std::fs::create_dir_all(&path)?;
         tracing::info!("Disk storage enabled: {}", path.display());
-        EmailStore::new_disk(path)?
+        EmailStore::new_disk(path, config.max_age, config.max_emails)?
     } else {
         tracing::info!("Using in-memory storage (no --store flag)");
-        EmailStore::new_memory()
+        EmailStore::new_memory(config.max_age, config.max_emails)
     };
 
     println!("devmail v{} listening", env!("CARGO_PKG_VERSION"));
@@ -44,15 +73,24 @@ async fn main() -> anyhow::Result<()> {
     if config.pass.is_some() {
         println!("  Auth : password required");
     }
+    if config.max_age > 0 {
+        println!("  Limit: max age {} hour(s)", config.max_age);
+    }
+    if config.max_emails > 0 {
+        println!("  Limit: max {} email(s)", config.max_emails);
+    }
     println!("  Press Ctrl+C to stop.");
+
+    let smtp_hint = build_smtp_hint(&config.smtp_addr);
 
     tokio::select! {
         r = smtp::run(&config.smtp_addr, shared_store.clone()) => {
             tracing::error!("SMTP server exited: {:?}", r);
         }
-        r = http::run(&config.http_addr, shared_store.clone(), config.pass.clone()) => {
+        r = http::run(&config.http_addr, shared_store.clone(), config.pass.clone(), smtp_hint) => {
             tracing::error!("HTTP server exited: {:?}", r);
         }
+        _ = periodic_cleanup(shared_store.clone()) => {}
         _ = tokio::signal::ctrl_c() => {
             println!("\nShutting down.");
         }

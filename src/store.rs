@@ -1,7 +1,7 @@
 use crate::mime::parse_email;
 use crate::model::{Attachment, Email, EmailSummary};
 use anyhow::Context;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -14,6 +14,8 @@ use uuid::Uuid;
 pub struct EmailStore {
     emails: IndexMap<Uuid, Email>,
     disk: Option<PathBuf>,
+    max_age_hours: u64,
+    max_emails: usize,
 }
 
 pub type SharedStore = Arc<RwLock<EmailStore>>;
@@ -26,16 +28,18 @@ struct MailState {
 }
 
 impl EmailStore {
-    pub fn new_memory() -> SharedStore {
+    pub fn new_memory(max_age_hours: u64, max_emails: usize) -> SharedStore {
         Arc::new(RwLock::new(EmailStore {
             emails: IndexMap::new(),
             disk: None,
+            max_age_hours,
+            max_emails,
         }))
     }
 
     /// Creates a disk-backed store and immediately reloads emails from the
     /// existing mbox file (if any), honouring saved read state.
-    pub fn new_disk(dir: PathBuf) -> anyhow::Result<SharedStore> {
+    pub fn new_disk(dir: PathBuf, max_age_hours: u64, max_emails: usize) -> anyhow::Result<SharedStore> {
         let state = load_state(&dir);
         let mut emails = IndexMap::new();
 
@@ -54,10 +58,14 @@ impl EmailStore {
 
         tracing::info!("Loaded {} email(s) from disk", emails.len());
 
-        Ok(Arc::new(RwLock::new(EmailStore {
+        let mut store = EmailStore {
             emails,
             disk: Some(dir),
-        })))
+            max_age_hours,
+            max_emails,
+        };
+        store.enforce_limits();
+        Ok(Arc::new(RwLock::new(store)))
     }
 
     pub fn len(&self) -> usize {
@@ -69,7 +77,44 @@ impl EmailStore {
             append_mbox(dir, &email)?;
         }
         self.emails.insert(email.id, email);
+        self.enforce_limits();
         Ok(())
+    }
+
+    /// Removes emails that exceed the configured age or count limits.
+    /// Called on save, on mbox reload, and periodically (once per hour).
+    /// Performs at most one mbox rewrite per call regardless of how many are removed.
+    pub(crate) fn enforce_limits(&mut self) {
+        let initial_len = self.emails.len();
+
+        if self.max_age_hours > 0 {
+            let cutoff = Utc::now() - Duration::hours(self.max_age_hours as i64);
+            let to_remove: Vec<Uuid> = self.emails
+                .values()
+                .filter(|e| e.received_at < cutoff)
+                .map(|e| e.id)
+                .collect();
+            for id in to_remove {
+                self.emails.shift_remove(&id);
+            }
+        }
+
+        if self.max_emails > 0 {
+            while self.emails.len() > self.max_emails {
+                self.emails.shift_remove_index(0);
+            }
+        }
+
+        if self.emails.len() < initial_len {
+            if let Some(ref dir) = self.disk {
+                if let Err(e) = rewrite_mbox(dir, &self.emails) {
+                    tracing::warn!("Failed to rewrite mbox after limit enforcement: {e}");
+                }
+                if let Err(e) = persist_state(dir, &self.emails) {
+                    tracing::warn!("Failed to persist state after limit enforcement: {e}");
+                }
+            }
+        }
     }
 
     /// Returns all emails newest-first.

@@ -15,7 +15,7 @@ It's a development tool for testing apps that send email. Nothing is ever delive
 ```
 src/
   main.rs          — entry point: parses CLI args, creates shared store, spawns both servers
-  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass
+  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass, --max-age, --max-emails
   model.rs         — Email, Attachment, EmailSummary (incl. to/cc), EmailDetail types
   store.rs         — EmailStore (Arc<RwLock<>>) with in-memory + optional mbox disk write/reload
   mime.rs          — parses raw SMTP DATA bytes into typed Email via mail-parser
@@ -48,9 +48,9 @@ cargo run -- --pass mysecret              # password-protect the webmail UI
 DEVMAIL_PASS=mysecret cargo run           # same, via env var
 ```
 
-**Linux binary (Docker Desktop required):**
+**Linux binary:**
 ```
-./build.sh build-linux         # produces dist/devmail (Linux x86_64)
+./build.sh build-linux         # produces dist/devmail (Linux x86_64); native cargo on Linux, Docker on Windows
 ```
 
 **Test in Docker container:**
@@ -76,6 +76,7 @@ DEVMAIL_PASS=mysecret cargo run           # same, via env var
 - **Search** — client-side, filters `EmailSummary` list by all words matching subject/from/to/cc; `EmailSummary` includes `to` and `cc` for this purpose; matched tokens highlighted with `<mark class="hl">` in yellow
 - **`__AUTH_ENABLED__`** placeholder in `index.html` — replaced at serve time by `serve_index` handler to inject `const DEVMAIL_AUTH = true/false` for the Sign out button
 - **Received header** — prepended to the raw message in `SmtpSession` at DATA acceptance time (RFC 5321 §4.4); format: `from <ehlo-id> ([<peer-ip>])\r\n\tby devmail with ESMTP; <date>`
+- **Email limits** — `--max-age` (hours) and `--max-emails` (count) stored in `EmailStore`; enforced in `enforce_limits()` which is called: on every `save()`, after mbox reload at startup, and by a background task once per hour; both default to non-zero (8h / 50); set to 0 to disable; single mbox rewrite per enforcement pass
 
 ---
 

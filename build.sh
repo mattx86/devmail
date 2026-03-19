@@ -33,10 +33,15 @@ case "$cmd" in
 
   build-linux)
     mkdir -p dist
-    DOCKER_BUILDKIT=1 docker build \
-      -f Dockerfile.linux-build \
-      --output type=local,dest=./dist \
-      .
+    if [ "$(uname -s)" = "Linux" ]; then
+      cargo build --release
+      cp target/release/devmail dist/devmail
+    else
+      DOCKER_BUILDKIT=1 docker build \
+        -f Dockerfile.linux-build \
+        --output type=local,dest=./dist \
+        .
+    fi
     echo "Linux binary: dist/devmail"
     ;;
 
@@ -96,7 +101,7 @@ case "$cmd" in
     echo ""
     echo "  build-windows    Build Windows release binary (cargo build --release)"
     echo "  release-windows  build-windows + package dist/devmail-v${VERSION}-windows-x86_64.zip"
-    echo "  build-linux      Build Linux x86_64 binary via Docker Desktop"
+    echo "  build-linux      Build Linux x86_64 binary (native on Linux, Docker on Windows)"
     echo "  release-linux    build-linux + package dist/devmail-v${VERSION}-linux-x86_64.tar.gz"
     echo "  all              release-windows + release-linux"
     echo ""

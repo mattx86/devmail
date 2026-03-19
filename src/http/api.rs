@@ -102,6 +102,7 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 pub struct AppState {
     pub store: SharedStore,
     pub auth: Option<Auth>,
+    pub smtp_hint: String,
 }
 
 #[derive(Clone)]
@@ -115,12 +116,12 @@ struct LoginForm {
     password: String,
 }
 
-pub fn build_router(store: SharedStore, password: Option<String>) -> Router {
+pub fn build_router(store: SharedStore, password: Option<String>, smtp_hint: String) -> Router {
     let auth = password.map(|pw| Auth {
         password: pw,
         session_token: Arc::new(Uuid::new_v4().to_string()),
     });
-    let state = AppState { store, auth };
+    let state = AppState { store, auth, smtp_hint };
 
     Router::new()
         .route("/", get(serve_index))
@@ -227,7 +228,9 @@ async fn handle_logout() -> Response {
 
 async fn serve_index(State(state): State<AppState>) -> Html<String> {
     let auth_flag = if state.auth.is_some() { "true" } else { "false" };
-    Html(INDEX_HTML.replace("__AUTH_ENABLED__", auth_flag))
+    Html(INDEX_HTML
+        .replace("__AUTH_ENABLED__", auth_flag)
+        .replace("__SMTP_HINT__", &state.smtp_hint))
 }
 
 async fn list_emails(State(state): State<AppState>) -> Json<Vec<EmailSummary>> {
