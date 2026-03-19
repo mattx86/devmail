@@ -52,6 +52,7 @@ DEVMAIL_PASS=mysecret cargo run           # same, via env var
 ```
 ./build.sh build-linux         # produces dist/devmail (Linux x86_64); native cargo on Linux, Docker on Windows
 ```
+Built against Rocky Linux 8 (GLIBC 2.28) for broad compatibility: RHEL/Rocky 8+, Ubuntu 20.04+, Debian 10+.
 
 **Test in Docker container:**
 ```
