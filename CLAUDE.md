@@ -15,7 +15,7 @@ It's a development tool for testing apps that send email. Nothing is ever delive
 ```
 src/
   main.rs          — entry point: parses CLI args, creates shared store, spawns both servers
-  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass, --max-age, --max-emails
+  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass, --max-age, --max-emails, --safe
   model.rs         — Email, Attachment, EmailSummary (incl. to/cc), EmailDetail types
   store.rs         — EmailStore (Arc<RwLock<>>) with in-memory + optional mbox disk write/reload
   mime.rs          — parses raw SMTP DATA bytes into typed Email via mail-parser
@@ -77,6 +77,7 @@ DEVMAIL_PASS=mysecret cargo run           # same, via env var
 - **`__AUTH_ENABLED__`** placeholder in `index.html` — replaced at serve time by `serve_index` handler to inject `const DEVMAIL_AUTH = true/false` for the Sign out button
 - **Received header** — prepended to the raw message in `SmtpSession` at DATA acceptance time (RFC 5321 §4.4); format: `from <ehlo-id> ([<peer-ip>])\r\n\tby devmail with ESMTP; <date>`
 - **Email limits** — `--max-age` (hours) and `--max-emails` (count) stored in `EmailStore`; enforced in `enforce_limits()` which is called: on every `save()`, after mbox reload at startup, and by a background task once per hour; both default to non-zero (8h / 50); set to 0 to disable; single mbox rewrite per enforcement pass
+- **Safe mode** — `--safe` flag; injected as `DEVMAIL_SAFE` JS constant via `__SAFE_MODE__` placeholder (same pattern as `__AUTH_ENABLED__`); when true, `sanitizeHtml()` in `index.html` runs HTML email bodies through `DOMParser` before `srcdoc` assignment: strips scripts, external stylesheets, meta-refresh, audio/video sources; replaces external images with labeled placeholders; makes external/javascript: links non-clickable and shows their URLs inline; strips external `background-image` from inline styles; a yellow banner is shown in the detail pane when an HTML email is rendered in safe mode
 
 ---
 

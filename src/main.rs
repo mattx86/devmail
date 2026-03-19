@@ -79,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
     if config.max_emails > 0 {
         println!("  Limit: max {} email(s)", config.max_emails);
     }
+    if config.safe {
+        println!("  Safe : rendering mode active (external resources blocked)");
+    }
     println!("  Press Ctrl+C to stop.");
 
     let smtp_hint = build_smtp_hint(&config.smtp_addr);
@@ -87,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         r = smtp::run(&config.smtp_addr, shared_store.clone()) => {
             tracing::error!("SMTP server exited: {:?}", r);
         }
-        r = http::run(&config.http_addr, shared_store.clone(), config.pass.clone(), smtp_hint) => {
+        r = http::run(&config.http_addr, shared_store.clone(), config.pass.clone(), smtp_hint, config.safe) => {
             tracing::error!("HTTP server exited: {:?}", r);
         }
         _ = periodic_cleanup(shared_store.clone()) => {}

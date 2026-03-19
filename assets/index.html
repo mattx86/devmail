@@ -368,7 +368,7 @@
     ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
   </style>
-  <script>const DEVMAIL_AUTH = __AUTH_ENABLED__;</script>
+  <script>const DEVMAIL_AUTH = __AUTH_ENABLED__; const DEVMAIL_SAFE = __SAFE_MODE__;</script>
 </head>
 <body>
 <div id="app">
@@ -430,6 +430,11 @@
             <button class="btn btn-primary" id="btn-view-headers">&#128196; View Headers</button>
             <button class="btn btn-danger" id="btn-delete">&#128465; Delete</button>
           </div>
+        </div>
+
+        <!-- Safe mode banner -->
+        <div id="safe-banner" style="display:none;margin:8px 16px 0;padding:6px 12px;background:#fef3c7;border:1px solid #d97706;border-radius:6px;font-size:12px;color:#92400e;">
+          &#128274; Safe mode — external images and links blocked
         </div>
 
         <!-- Attachments -->
@@ -666,11 +671,13 @@ function renderDetail(detail) {
   // Body
   const bodyText = document.getElementById('body-text');
   const bodyIframe = document.getElementById('body-iframe');
+  const safeBanner = document.getElementById('safe-banner');
 
   if (detail.html_body) {
     bodyText.style.display = 'none';
     bodyIframe.style.display = 'block';
-    bodyIframe.srcdoc = detail.html_body;
+    safeBanner.style.display = DEVMAIL_SAFE ? 'block' : 'none';
+    bodyIframe.srcdoc = DEVMAIL_SAFE ? sanitizeHtml(detail.html_body) : detail.html_body;
     bodyIframe.onload = () => {
       try {
         const h = bodyIframe.contentDocument.documentElement.scrollHeight;
@@ -680,16 +687,80 @@ function renderDetail(detail) {
       }
     };
   } else if (detail.text_body) {
+    safeBanner.style.display = 'none';
     bodyIframe.style.display = 'none';
     bodyText.style.display = 'block';
     bodyText.textContent = detail.text_body;
   } else {
+    safeBanner.style.display = 'none';
     bodyIframe.style.display = 'none';
     bodyText.style.display = 'block';
     bodyText.textContent = '(no body)';
   }
 
   currentDetail = detail;
+}
+
+// ── Safe mode HTML sanitizer ──────────────────────────────────────────────────
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const external = /^https?:|^\/\//i;
+
+  // Remove scripts
+  doc.querySelectorAll('script').forEach(el => el.remove());
+
+  // Remove external stylesheets
+  doc.querySelectorAll('link').forEach(el => {
+    const href = el.getAttribute('href') || '';
+    if (external.test(href)) el.remove();
+  });
+
+  // Remove meta refresh
+  doc.querySelectorAll('meta').forEach(el => {
+    if ((el.getAttribute('http-equiv') || '').toLowerCase() === 'refresh') el.remove();
+  });
+
+  // Block external images — replace with labeled placeholder
+  doc.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') || '';
+    const srcset = img.getAttribute('srcset') || '';
+    if (external.test(src) || external.test(srcset)) {
+      const span = doc.createElement('span');
+      span.textContent = '[image blocked: ' + (src || srcset) + ']';
+      span.style.cssText = 'display:inline-block;padding:2px 6px;background:#fef3c7;border:1px dashed #d97706;border-radius:3px;font-size:11px;color:#92400e;font-family:monospace;word-break:break-all';
+      img.replaceWith(span);
+    }
+    img.removeAttribute('srcset');
+  });
+
+  // Make external and javascript: links non-clickable; show URL inline
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (external.test(href) || /^javascript:/i.test(href)) {
+      a.removeAttribute('href');
+      a.style.cssText = 'cursor:default;text-decoration:none;color:inherit';
+      const urlSpan = doc.createElement('span');
+      urlSpan.textContent = ' [' + href + ']';
+      urlSpan.style.cssText = 'font-size:11px;color:#6b7280;font-family:monospace;word-break:break-all';
+      a.after(urlSpan);
+    }
+  });
+
+  // Strip external background-image from inline styles
+  doc.querySelectorAll('[style]').forEach(el => {
+    const s = el.getAttribute('style') || '';
+    if (/url\s*\(\s*['"]?https?:/i.test(s) || /url\s*\(\s*['"]?\/\//i.test(s)) {
+      el.setAttribute('style', s.replace(/background(-image)?\s*:[^;]*/gi, ''));
+    }
+  });
+
+  // Strip audio/video sources
+  doc.querySelectorAll('audio, video').forEach(el => {
+    el.removeAttribute('src');
+    el.querySelectorAll('source').forEach(s => s.remove());
+  });
+
+  return new XMLSerializer().serializeToString(doc);
 }
 
 // ── Event handlers ────────────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ Options:
       --pass <PASSWORD>    Password to protect the webmail UI [env: DEVMAIL_PASS]
       --max-age <HOURS>    Delete emails older than N hours on each check (0 = disabled) [default: 8]
       --max-emails <COUNT> Keep only the N most recent emails (0 = disabled) [default: 50]
+      --safe               Block external images, links, and CSS in HTML emails (for security research)
   -h, --help               Print help
   -V, --version            Print version
 ```

@@ -103,6 +103,7 @@ pub struct AppState {
     pub store: SharedStore,
     pub auth: Option<Auth>,
     pub smtp_hint: String,
+    pub safe_mode: bool,
 }
 
 #[derive(Clone)]
@@ -116,12 +117,12 @@ struct LoginForm {
     password: String,
 }
 
-pub fn build_router(store: SharedStore, password: Option<String>, smtp_hint: String) -> Router {
+pub fn build_router(store: SharedStore, password: Option<String>, smtp_hint: String, safe_mode: bool) -> Router {
     let auth = password.map(|pw| Auth {
         password: pw,
         session_token: Arc::new(Uuid::new_v4().to_string()),
     });
-    let state = AppState { store, auth, smtp_hint };
+    let state = AppState { store, auth, smtp_hint, safe_mode };
 
     Router::new()
         .route("/", get(serve_index))
@@ -228,9 +229,11 @@ async fn handle_logout() -> Response {
 
 async fn serve_index(State(state): State<AppState>) -> Html<String> {
     let auth_flag = if state.auth.is_some() { "true" } else { "false" };
+    let safe_flag = if state.safe_mode { "true" } else { "false" };
     Html(INDEX_HTML
         .replace("__AUTH_ENABLED__", auth_flag)
-        .replace("__SMTP_HINT__", &state.smtp_hint))
+        .replace("__SMTP_HINT__", &state.smtp_hint)
+        .replace("__SAFE_MODE__", safe_flag))
 }
 
 async fn list_emails(State(state): State<AppState>) -> Json<Vec<EmailSummary>> {

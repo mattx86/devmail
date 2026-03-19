@@ -36,6 +36,10 @@ pub struct Config {
     /// Keep only the N most recent emails (0 = disabled)
     #[arg(long, default_value_t = 50, value_name = "COUNT")]
     pub max_emails: usize,
+
+    /// Enable safe rendering mode: blocks external images, links, and CSS (for security research)
+    #[arg(long)]
+    pub safe: bool,
 }
 
 impl Config {
