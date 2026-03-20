@@ -53,10 +53,10 @@ async fn main() -> anyhow::Result<()> {
         let path = config.storage_path();
         std::fs::create_dir_all(&path)?;
         tracing::info!("Disk storage enabled: {}", path.display());
-        EmailStore::new_disk(path, config.max_age, config.max_emails)?
+        EmailStore::new_disk(path, config.max_age, config.max_emails, config.max_size)?
     } else {
         tracing::info!("Using in-memory storage (no --store flag)");
-        EmailStore::new_memory(config.max_age, config.max_emails)
+        EmailStore::new_memory(config.max_age, config.max_emails, config.max_size)
     };
 
     println!("devmail v{} listening", env!("CARGO_PKG_VERSION"));
@@ -79,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
     if config.max_emails > 0 {
         println!("  Limit: max {} email(s)", config.max_emails);
     }
+    if config.max_size > 0 {
+        println!("  Limit: max {} MB per email / total inbox", config.max_size);
+    }
     if config.safe {
         println!("  Safe : rendering mode active (external resources blocked)");
     }
@@ -87,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let smtp_hint = build_smtp_hint(&config.smtp_addr);
 
     tokio::select! {
-        r = smtp::run(&config.smtp_addr, shared_store.clone()) => {
+        r = smtp::run(&config.smtp_addr, shared_store.clone(), config.max_size * 1024 * 1024) => {
             tracing::error!("SMTP server exited: {:?}", r);
         }
         r = http::run(&config.http_addr, shared_store.clone(), config.pass.clone(), smtp_hint, config.safe) => {

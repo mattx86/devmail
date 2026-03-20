@@ -7,6 +7,7 @@ pub struct Email {
     pub id: Uuid,
     pub received_at: DateTime<Utc>,
     /// Full raw RFC 5322 message — used for mbox storage and the headers popup.
+    /// Empty string in disk mode (content is read from disk on demand).
     pub raw: String,
     pub from: String,
     pub to: Vec<String>,
@@ -16,6 +17,8 @@ pub struct Email {
     pub html_body: Option<String>,
     pub attachments: Vec<Attachment>,
     pub read: bool,
+    /// Size of the raw RFC 5322 message in bytes. Always populated even in disk mode.
+    pub size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +40,7 @@ pub struct EmailSummary {
     pub subject: String,
     pub received_at: DateTime<Utc>,
     pub read: bool,
+    pub has_attachments: bool,
 }
 
 impl From<&Email> for EmailSummary {
@@ -49,6 +53,7 @@ impl From<&Email> for EmailSummary {
             subject: e.subject.clone(),
             received_at: e.received_at,
             read: e.read,
+            has_attachments: !e.attachments.is_empty(),
         }
     }
 }

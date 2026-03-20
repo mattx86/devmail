@@ -134,6 +134,55 @@
 
     #email-list { flex: 1; overflow-y: auto; }
 
+    /* ── Capacity bar ──────────────────────────────────────────────────── */
+    #capacity-bar-wrap {
+      padding: 6px 10px 5px;
+      border-top: 1px solid var(--color-list-border);
+      background: var(--color-list-bg);
+      flex-shrink: 0;
+      opacity: 0.55;
+    }
+    #capacity-bar-wrap:hover {
+      opacity: 1;
+      transition: opacity 0.2s ease;
+    }
+    #capacity-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    #capacity-track {
+      flex: 1;
+      height: 3px;
+      background: #d1d5db;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #capacity-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 2px;
+      transition: width 0.4s ease, background-color 0.4s ease;
+      background: #9ca3af;
+    }
+    #capacity-label {
+      font-size: 10px;
+      color: var(--color-meta-label);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    #capacity-footer {
+      font-size: 10px;
+      color: var(--color-meta-label);
+      margin-top: 3px;
+      text-align: center;
+    }
+    #capacity-footer a {
+      color: inherit;
+      text-decoration: none;
+    }
+    #capacity-footer a:hover { text-decoration: underline; }
+
     .email-item {
       padding: 10px 12px 10px 14px;
       border-bottom: 1px solid var(--color-list-border);
@@ -155,7 +204,12 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      gap: 4px;
     }
+    .item-subject-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .item-clip { flex-shrink: 0; opacity: 0.45; display: flex; align-items: center; }
     .email-item.unread .item-subject { font-weight: 700; }
 
     .item-from {
@@ -368,7 +422,8 @@
     ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
   </style>
-  <script>const DEVMAIL_AUTH = __AUTH_ENABLED__; const DEVMAIL_SAFE = __SAFE_MODE__;</script>
+  <script>const DEVMAIL_AUTH = __AUTH_ENABLED__; const DEVMAIL_SAFE = __SAFE_MODE__;
+  const CLIP_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 0 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';</script>
 </head>
 <body>
 <div id="app">
@@ -404,6 +459,13 @@
           <div id="empty-msg">Waiting for email…</div>
           <div id="empty-sub" style="font-size:12px;color:#c4c9d4">Send to __SMTP_HINT__</div>
         </div>
+      </div>
+      <div id="capacity-bar-wrap">
+        <div id="capacity-row">
+          <div id="capacity-track"><div id="capacity-fill"></div></div>
+          <div id="capacity-label">—</div>
+        </div>
+        <div id="capacity-footer">v__VERSION__ &mdash; <a href="https://github.com/mattx86/devmail" target="_blank" rel="noopener">github.com/mattx86/devmail</a></div>
       </div>
     </div>
 
@@ -480,7 +542,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   bindEvents();
   refresh();
+  refreshStats();
   setInterval(refresh, 3000);
+  setInterval(refreshStats, 3000);
 });
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -530,6 +594,25 @@ async function refresh() {
   }
 }
 
+async function refreshStats() {
+  try {
+    const res = await fetch('/api/stats');
+    if (!res.ok) return;
+    const { current_bytes, max_bytes } = await res.json();
+    const fill = document.getElementById('capacity-fill');
+    const label = document.getElementById('capacity-label');
+    if (max_bytes === 0) {
+      fill.style.width = '0%';
+      label.textContent = formatBytes(current_bytes);
+      return;
+    }
+    const pct = Math.min(100, (current_bytes / max_bytes) * 100);
+    fill.style.width = pct.toFixed(1) + '%';
+    fill.style.backgroundColor = pct > 90 ? '#e05a50' : pct > 70 ? '#d4a020' : '#9ca3af';
+    label.textContent = `${formatBytes(current_bytes)} / ${formatBytes(max_bytes)}`;
+  } catch (_) {}
+}
+
 // ── Search filtering ──────────────────────────────────────────────────────────
 function filteredEmails() {
   if (!searchQuery) return emails;
@@ -550,6 +633,9 @@ function renderList() {
   const container = document.getElementById('email-list');
   const empty = document.getElementById('empty-list');
   const toolbar = document.getElementById('list-count');
+
+  // Save scroll position before removing items (container resets to 0 when emptied).
+  const scrollTop = container.scrollTop;
 
   // Always remove stale items before re-rendering (including the empty-list case).
   Array.from(container.querySelectorAll('.email-item')).forEach(n => n.remove());
@@ -585,9 +671,6 @@ function renderList() {
     toolbar.textContent = total === 1 ? '1 message' : `${total} messages`;
   }
 
-  // Preserve scroll position
-  const scrollTop = container.scrollTop;
-
   for (const email of filtered) {
     const div = document.createElement('div');
     div.className = 'email-item' +
@@ -597,7 +680,16 @@ function renderList() {
 
     const subject = document.createElement('div');
     subject.className = 'item-subject';
-    subject.innerHTML = highlightTokens(email.subject || '(no subject)', tokens);
+    const subjectText = document.createElement('span');
+    subjectText.className = 'item-subject-text';
+    subjectText.innerHTML = highlightTokens(email.subject || '(no subject)', tokens);
+    subject.appendChild(subjectText);
+    if (email.has_attachments) {
+      const clip = document.createElement('span');
+      clip.className = 'item-clip';
+      clip.innerHTML = CLIP_SVG;
+      subject.appendChild(clip);
+    }
 
     const from = document.createElement('div');
     from.className = 'item-from';
@@ -661,7 +753,7 @@ function renderDetail(detail) {
       a.className = 'attachment-chip';
       a.href = `/api/emails/${detail.id}/attachments/${encodeURIComponent(att.filename)}`;
       a.download = att.filename;
-      a.innerHTML = `&#128206; ${escHtml(att.filename)} <span class="attach-size">${formatBytes(att.size)}</span>`;
+      a.innerHTML = `${CLIP_SVG} ${escHtml(att.filename)} <span class="attach-size">${formatBytes(att.size)}</span>`;
       attList.appendChild(a);
     }
   } else {
@@ -898,7 +990,8 @@ function formatFullTime(isoStr) {
 function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1048576).toFixed(1)} MB`;
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${(n / 1073741824).toFixed(2)} GB`;
 }
 
 function escHtml(s) {

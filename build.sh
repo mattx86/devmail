@@ -21,10 +21,13 @@ case "$cmd" in
     mkdir -p dist
     WIN_NAME="devmail-v${VERSION}-windows-x86_64"
     powershell -NoProfile -Command "
-      New-Item -ItemType Directory -Force -Path 'dist/${WIN_NAME}' | Out-Null
-      Copy-Item 'target/release/devmail.exe','LICENSE.md','README.md' -Destination 'dist/${WIN_NAME}'
-      Compress-Archive -Force -Path 'dist/${WIN_NAME}' -DestinationPath 'dist/${WIN_NAME}.zip'
-      Remove-Item -Recurse -Force 'dist/${WIN_NAME}'
+      \$stage = Join-Path \$env:TEMP '${WIN_NAME}'
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue \$stage
+      New-Item -ItemType Directory -Force -Path \$stage | Out-Null
+      Copy-Item 'target/release/devmail.exe','LICENSE.md','README.md' -Destination \$stage
+      New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+      Compress-Archive -Force -Path \$stage -DestinationPath 'dist/${WIN_NAME}.zip'
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue \$stage
     "
     echo "Windows release: dist/${WIN_NAME}.zip"
     ;;

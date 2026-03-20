@@ -15,9 +15,9 @@ It's a development tool for testing apps that send email. Nothing is ever delive
 ```
 src/
   main.rs          — entry point: parses CLI args, creates shared store, spawns both servers
-  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass, --max-age, --max-emails, --safe
-  model.rs         — Email, Attachment, EmailSummary (incl. to/cc), EmailDetail types
-  store.rs         — EmailStore (Arc<RwLock<>>) with in-memory + optional mbox disk write/reload
+  config.rs        — clap CLI struct (Config) — --store, --path, --smtp-addr, --http-addr, --pass, --max-age, --max-emails, --max-size, --safe
+  model.rs         — Email (incl. size_bytes), Attachment, EmailSummary (incl. to/cc, has_attachments), EmailDetail types
+  store.rs         — EmailStore (Arc<RwLock<>>) with in-memory + optional mbox disk write/reload; disk mode keeps shells only
   mime.rs          — parses raw SMTP DATA bytes into typed Email via mail-parser
   smtp/
     mod.rs         — re-exports run()
@@ -56,7 +56,7 @@ Built against Rocky Linux 8 (GLIBC 2.28) for broad compatibility: RHEL/Rocky 8+,
 
 **Test in Docker container:**
 ```
-./build.sh test-container      # builds and runs in Ubuntu 24.04
+./build.sh test-container      # builds Linux binary, runs in Ubuntu 24.04, sends 10 Lorem Ipsum test emails via swaks (~16 MB total)
 ```
 
 ---
@@ -75,9 +75,15 @@ Built against Rocky Linux 8 (GLIBC 2.28) for broad compatibility: RHEL/Rocky 8+,
 - **iframe sandbox** — HTML emails rendered in `<iframe sandbox="allow-same-origin" srcdoc="...">` to prevent script execution
 - **Auth** — `--pass` / `DEVMAIL_PASS` sets a password; a random session token is generated on startup; stored in an `HttpOnly; SameSite=Strict` cookie; login/logout via `/login` and `/logout`; all routes protected by axum `route_layer` middleware except `/login` and `/logout`
 - **Search** — client-side, filters `EmailSummary` list by all words matching subject/from/to/cc; `EmailSummary` includes `to` and `cc` for this purpose; matched tokens highlighted with `<mark class="hl">` in yellow
-- **`__AUTH_ENABLED__`** placeholder in `index.html` — replaced at serve time by `serve_index` handler to inject `const DEVMAIL_AUTH = true/false` for the Sign out button
+- **`__AUTH_ENABLED__`** placeholder in `index.html` — replaced at serve time by `serve_index` handler to inject `const DEVMAIL_AUTH = true/false` for the Sign out button; same pattern used for `__SMTP_HINT__`, `__SAFE_MODE__`, and `__VERSION__` (version injected from `env!("CARGO_PKG_VERSION")`)
 - **Received header** — prepended to the raw message in `SmtpSession` at DATA acceptance time (RFC 5321 §4.4); format: `from <ehlo-id> ([<peer-ip>])\r\n\tby devmail with ESMTP; <date>`
+- **SMTP extensions** — EHLO advertises `SIZE <bytes>` (RFC 1870, only when `--max-size > 0`), `PIPELINING` (RFC 2920), `SMTPUTF8` (RFC 6531), and `8BITMIME`; `MAIL FROM SIZE=n` is pre-rejected with 552 if `n > max_size_bytes` before the client sends the body
+- **`has_attachments`** — `EmailSummary` includes a `has_attachments: bool` field (derived from `!e.attachments.is_empty()`); in disk mode, attachment metadata (filename/content-type) is preserved in shells — only the byte data is cleared — so `has_attachments` remains accurate; the webmail email list shows a paperclip SVG icon for emails with attachments
+- **Webmail footer** — bottom of the left pane shows an inline usage bar + label (bar left, label right), then a centered `v<VERSION> — github.com/mattx86/devmail` line
 - **Email limits** — `--max-age` (hours) and `--max-emails` (count) stored in `EmailStore`; enforced in `enforce_limits()` which is called: on every `save()`, after mbox reload at startup, and by a background task once per hour; both default to non-zero (8h / 50); set to 0 to disable; single mbox rewrite per enforcement pass
+- **Size limit** — `--max-size <MB>` (default 32, 0 = disabled): if an incoming email exceeds the limit it is rejected at SMTP with `552`; if total inbox + new email would exceed the limit, oldest emails are evicted to make room first; `Email.size_bytes` = `raw.len()`, tracked in `EmailStore.total_size_bytes`; `save()` returns `Result<(), SaveError>` where `SaveError::TooBig` triggers the 552 response
+- **Disk-only storage** — when `--store` is active, only metadata (from/to/subject/received_at/size_bytes/read/attachments metadata) is kept in the IndexMap as "shells" (`raw=""`, `text_body=None`, `html_body=None`, attachment `data=[]`); full email content is read from the mbox on demand via `EmailStore::get_full()`; mbox rewrites (delete/evict) use `rewrite_mbox_filtered()` which reads raw entries from the old file and filters by kept UUIDs
+- **`/api/stats`** — returns `{ current_bytes, max_bytes }` for the capacity bar; `max_bytes` is the `--max-size` limit when set, otherwise available RAM (memory mode) or available disk space for the mbox partition (disk mode) via `sysinfo`; capacity bar in the left pane polls this endpoint every 3 seconds and color-codes: green ≤70%, yellow ≤90%, red >90%
 - **Safe mode** — `--safe` flag; injected as `DEVMAIL_SAFE` JS constant via `__SAFE_MODE__` placeholder (same pattern as `__AUTH_ENABLED__`); when true, `sanitizeHtml()` in `index.html` runs HTML email bodies through `DOMParser` before `srcdoc` assignment: strips scripts, external stylesheets, meta-refresh, audio/video sources; replaces external images with labeled placeholders; makes external/javascript: links non-clickable and shows their URLs inline; strips external `background-image` from inline styles; a yellow banner is shown in the detail pane when an HTML email is rendered in safe mode
 
 ---
@@ -102,6 +108,7 @@ Do not add any GPL, LGPL, or AGPL dependencies.
 | DELETE | `/api/emails/:id` | Delete email (204); rewrites mbox if disk enabled |
 | GET | `/api/emails/:id/raw` | Raw RFC 5322 message text |
 | GET | `/api/emails/:id/attachments/:filename` | Download attachment |
+| GET | `/api/stats` | `{ current_bytes, max_bytes }` — inbox usage and capacity |
 
 ---
 
@@ -111,6 +118,9 @@ Do not add any GPL, LGPL, or AGPL dependencies.
 S: 220 devmail ESMTP ready
 C: EHLO client.name
 S: 250-devmail
+S: 250-SIZE 33554432          (omitted when --max-size 0)
+S: 250-PIPELINING
+S: 250-SMTPUTF8
 S: 250 8BITMIME
 C: MAIL FROM:<sender@example.com>
 S: 250 OK

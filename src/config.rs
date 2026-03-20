@@ -37,6 +37,10 @@ pub struct Config {
     #[arg(long, default_value_t = 50, value_name = "COUNT")]
     pub max_emails: usize,
 
+    /// Maximum size of a single email and total inbox in MB (0 = disabled)
+    #[arg(long, default_value_t = 32, value_name = "MB")]
+    pub max_size: usize,
+
     /// Enable safe rendering mode: blocks external images, links, and CSS (for security research)
     #[arg(long)]
     pub safe: bool,

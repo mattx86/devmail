@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -135,6 +135,7 @@ pub fn build_router(store: SharedStore, password: Option<String>, smtp_hint: Str
             "/api/emails/:id/attachments/:filename",
             get(download_attachment),
         )
+        .route("/api/stats", get(get_stats))
         .route("/login", get(serve_login).post(handle_login))
         .route("/logout", post(handle_logout))
         .route_layer(middleware::from_fn_with_state(
@@ -233,7 +234,8 @@ async fn serve_index(State(state): State<AppState>) -> Html<String> {
     Html(INDEX_HTML
         .replace("__AUTH_ENABLED__", auth_flag)
         .replace("__SMTP_HINT__", &state.smtp_hint)
-        .replace("__SAFE_MODE__", safe_flag))
+        .replace("__SAFE_MODE__", safe_flag)
+        .replace("__VERSION__", env!("CARGO_PKG_VERSION")))
 }
 
 async fn list_emails(State(state): State<AppState>) -> Json<Vec<EmailSummary>> {
@@ -247,8 +249,9 @@ async fn get_email(
 ) -> Result<Json<EmailDetail>, StatusCode> {
     let store = state.store.read().await;
     store
-        .get(id)
-        .map(|e| Json(EmailDetail::from(e)))
+        .get_full(id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|e| Json(EmailDetail::from(&e)))
         .ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -283,8 +286,9 @@ async fn get_raw(
     let raw = {
         let store = state.store.read().await;
         store
-            .get(id)
-            .map(|e| e.raw.clone())
+            .get_full(id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map(|e| e.raw)
             .ok_or(StatusCode::NOT_FOUND)?
     };
 
@@ -300,10 +304,16 @@ async fn download_attachment(
 ) -> Result<impl IntoResponse, StatusCode> {
     let (content_type, data) = {
         let store = state.store.read().await;
-        let att = store
-            .get_attachment(id, &filename)
+        let email = store
+            .get_full(id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .ok_or(StatusCode::NOT_FOUND)?;
-        (att.content_type.clone(), att.data.clone())
+        let att = email
+            .attachments
+            .into_iter()
+            .find(|a| a.filename == filename)
+            .ok_or(StatusCode::NOT_FOUND)?;
+        (att.content_type, att.data)
     };
 
     let disposition = format!("attachment; filename=\"{}\"", filename);
@@ -313,4 +323,16 @@ async fn download_attachment(
         .header(header::CONTENT_DISPOSITION, disposition)
         .body(Body::from(data))
         .unwrap())
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    current_bytes: u64,
+    max_bytes: u64,
+}
+
+async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
+    let store = state.store.read().await;
+    let (current_bytes, max_bytes) = store.capacity();
+    Json(StatsResponse { current_bytes, max_bytes })
 }

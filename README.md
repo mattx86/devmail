@@ -12,12 +12,15 @@ A cross-platform local SMTP sink and webmail UI for development. Accepts all inc
 
 ## Features
 
-- **SMTP sink** on `127.0.0.1:1025` — accepts any sender/recipient, no auth, no TLS; injects a `Received` trace header (RFC 5321 §4.4)
+- **SMTP sink** on `127.0.0.1:1025` — accepts any sender/recipient, no auth, no TLS; injects a `Received` trace header (RFC 5321 §4.4); advertises `SIZE`, `PIPELINING`, `SMTPUTF8`, and `8BITMIME` extensions
 - **Webmail UI** at `http://127.0.0.1:8085` — no login required by default
+- Email list shows a paperclip icon for messages with attachments
 - Search emails by subject, from, to, and CC — keywords highlighted in yellow
 - Optional password protection via `--pass` or `DEVMAIL_PASS` env var
 - Supports text, HTML, images, and attachments
-- In-memory storage by default; optional mbox disk storage with reload on startup
+- In-memory storage by default; optional mbox disk storage (disk mode keeps only metadata in memory)
+- Configurable inbox size limit (`--max-size`) with automatic oldest-first eviction; oversized emails rejected at SMTP with 552; declared `SIZE=` in `MAIL FROM` pre-rejected before body transfer
+- Capacity bar in the webmail left pane showing current usage vs. limit (or available RAM/disk when no limit is set)
 - Cross-platform: Windows and Linux (x86_64)
 - Single self-contained binary, no external files needed
 
@@ -36,6 +39,9 @@ Options:
       --pass <PASSWORD>    Password to protect the webmail UI [env: DEVMAIL_PASS]
       --max-age <HOURS>    Delete emails older than N hours on each check (0 = disabled) [default: 8]
       --max-emails <COUNT> Keep only the N most recent emails (0 = disabled) [default: 50]
+      --max-size <MB>      Max size of a single email and total inbox in MB; oversized emails are rejected
+                           with SMTP 552; oldest emails are evicted to make room; SIZE advertised in EHLO
+                           (0 = disabled) [default: 32]
       --safe               Block external images, links, and CSS in HTML emails (for security research)
   -h, --help               Print help
   -V, --version            Print version
@@ -72,7 +78,7 @@ DEVMAIL_PASS=mysecret devmail
 
 Open `http://127.0.0.1:8085` in your browser after starting devmail.
 
-- **Left pane**: list of received emails — bold when unread; count shown in toolbar
+- **Left pane**: list of received emails — bold when unread; paperclip icon on emails with attachments; count shown in toolbar; capacity bar + usage label at the bottom; version and GitHub link below
 - **Search box**: filter by subject, from, to, or CC — matching words highlighted in yellow
 - **Right pane**: full email view with headers, attachments, and body
 - **View Headers** button: popup showing raw RFC 5322 headers only
@@ -130,7 +136,7 @@ Make release zip (requires Git Bash):
 
 ## Testing with Docker
 
-Build the Linux binary first, then run it in an Ubuntu 24.04 container:
+Build the Linux binary first, then run it in an Ubuntu 24.04 container. On startup, the container automatically sends 10 Lorem Ipsum-style test emails (3 with attachments, ~16 MB total — ~50% of the default inbox limit) via swaks:
 ```
 ./build.sh test-container
 # Exposes SMTP on localhost:1025 and webmail on localhost:8085
@@ -144,6 +150,10 @@ When `--store` is used, emails are saved to `devmail.mbox` in the storage direct
 using standard mbox format. On restart, devmail reloads all emails from the mbox
 file — read/unread status is preserved in a `devmail_state.json` sidecar. Deleted
 emails are removed from the mbox immediately (the file is rewritten on each delete).
+
+In disk mode, only lightweight metadata (from, to, subject, size, read status) is
+kept in memory. Full email content (body, attachments, raw message) is read from
+disk on demand — making it suitable for larger inboxes without high RAM usage.
 
 The mbox file can also be opened directly in any mbox-compatible mail client
 (Thunderbird, mutt, etc.).
@@ -168,3 +178,5 @@ All dependencies are MIT or Apache 2.0 licensed — no copyleft.
 | base64 | 0.22 | MIT/Apache 2.0 |
 | anyhow | 1.0 | MIT/Apache 2.0 |
 | tracing / tracing-subscriber | 0.1 / 0.3 | MIT |
+| if-addrs | 0.15 | MIT/Apache 2.0 |
+| sysinfo | 0.32 | MIT |

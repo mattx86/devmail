@@ -2,7 +2,8 @@
 pub enum SmtpCommand {
     Ehlo(String),
     Helo(String),
-    MailFrom(String),
+    /// MAIL FROM address and optional declared SIZE parameter (RFC 1870).
+    MailFrom { addr: String, declared_size: Option<usize> },
     RcptTo(String),
     Data,
     Rset,
@@ -20,7 +21,13 @@ pub fn parse_command(line: &str) -> SmtpCommand {
     } else if upper.starts_with("HELO ") {
         SmtpCommand::Helo(line[5..].trim().to_string())
     } else if upper.starts_with("MAIL FROM:") {
-        SmtpCommand::MailFrom(extract_address(&line[10..]))
+        let rest = &line[10..];
+        let addr = extract_address(rest);
+        // Look for SIZE=<n> parameter after the address (case-insensitive).
+        let declared_size = rest.to_ascii_uppercase()
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix("SIZE=").and_then(|n| n.parse().ok()));
+        SmtpCommand::MailFrom { addr, declared_size }
     } else if upper.starts_with("RCPT TO:") {
         SmtpCommand::RcptTo(extract_address(&line[8..]))
     } else if upper == "DATA" {

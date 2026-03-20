@@ -1,5 +1,5 @@
 use crate::mime::parse_email;
-use crate::model::{Attachment, Email, EmailSummary};
+use crate::model::{Email, EmailSummary};
 use anyhow::Context;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use indexmap::IndexMap;
@@ -16,9 +16,23 @@ pub struct EmailStore {
     disk: Option<PathBuf>,
     max_age_hours: u64,
     max_emails: usize,
+    max_size_mb: usize,
+    total_size_bytes: usize,
 }
 
 pub type SharedStore = Arc<RwLock<EmailStore>>;
+
+#[derive(Debug)]
+pub enum SaveError {
+    TooBig,
+    Io(anyhow::Error),
+}
+
+impl From<anyhow::Error> for SaveError {
+    fn from(e: anyhow::Error) -> Self {
+        SaveError::Io(e)
+    }
+}
 
 /// Persisted alongside devmail.mbox — tracks which emails have been read.
 #[derive(Serialize, Deserialize, Default)]
@@ -28,26 +42,41 @@ struct MailState {
 }
 
 impl EmailStore {
-    pub fn new_memory(max_age_hours: u64, max_emails: usize) -> SharedStore {
+    pub fn new_memory(max_age_hours: u64, max_emails: usize, max_size_mb: usize) -> SharedStore {
         Arc::new(RwLock::new(EmailStore {
             emails: IndexMap::new(),
             disk: None,
             max_age_hours,
             max_emails,
+            max_size_mb,
+            total_size_bytes: 0,
         }))
     }
 
-    /// Creates a disk-backed store and immediately reloads emails from the
+    /// Creates a disk-backed store and immediately reloads email metadata from the
     /// existing mbox file (if any), honouring saved read state.
-    pub fn new_disk(dir: PathBuf, max_age_hours: u64, max_emails: usize) -> anyhow::Result<SharedStore> {
+    /// Bodies, raw messages, and attachments are NOT kept in memory — only shells.
+    pub fn new_disk(
+        dir: PathBuf,
+        max_age_hours: u64,
+        max_emails: usize,
+        max_size_mb: usize,
+    ) -> anyhow::Result<SharedStore> {
         let state = load_state(&dir);
         let mut emails = IndexMap::new();
+        let mut total_size_bytes: usize = 0;
 
         for (raw, received_at, id) in load_mbox_messages(&dir)? {
             match parse_email(&raw, "", vec![], received_at) {
                 Ok(mut email) => {
                     email.id = id;
                     email.read = state.read_ids.contains(&id);
+                    total_size_bytes += email.size_bytes;
+                    // Disk mode: discard bodies/raw/attachment data; keep metadata (incl. attachment count).
+                    email.raw = String::new();
+                    email.text_body = None;
+                    email.html_body = None;
+                    for att in &mut email.attachments { att.data = vec![]; }
                     emails.insert(id, email);
                 }
                 Err(e) => {
@@ -63,6 +92,8 @@ impl EmailStore {
             disk: Some(dir),
             max_age_hours,
             max_emails,
+            max_size_mb,
+            total_size_bytes,
         };
         store.enforce_limits();
         Ok(Arc::new(RwLock::new(store)))
@@ -72,16 +103,59 @@ impl EmailStore {
         self.emails.len()
     }
 
-    pub fn save(&mut self, email: Email) -> anyhow::Result<()> {
-        if let Some(ref dir) = self.disk {
-            append_mbox(dir, &email)?;
+    pub fn save(&mut self, email: Email) -> Result<(), SaveError> {
+        let max_bytes = self.max_size_mb.saturating_mul(1024 * 1024);
+
+        if max_bytes > 0 {
+            // Reject emails that are larger than the entire inbox limit.
+            if email.size_bytes > max_bytes {
+                return Err(SaveError::TooBig);
+            }
+
+            // Evict oldest emails to make room for the incoming one.
+            let mut evicted = false;
+            while self.total_size_bytes + email.size_bytes > max_bytes {
+                if let Some((_, removed)) = self.emails.shift_remove_index(0) {
+                    self.total_size_bytes =
+                        self.total_size_bytes.saturating_sub(removed.size_bytes);
+                    evicted = true;
+                } else {
+                    break;
+                }
+            }
+            if evicted {
+                if let Some(ref dir) = self.disk {
+                    if let Err(e) = rewrite_mbox_filtered(dir, &self.emails) {
+                        return Err(SaveError::Io(e));
+                    }
+                    if let Err(e) = persist_state(dir, &self.emails) {
+                        tracing::warn!("Failed to persist state after size eviction: {e}");
+                    }
+                }
+            }
         }
-        self.emails.insert(email.id, email);
+
+        if let Some(ref dir) = self.disk {
+            append_mbox(dir, &email).map_err(SaveError::Io)?;
+            // Disk mode: store shell only (metadata, no body/raw/attachment data).
+            let mut shell = email;
+            let size_bytes = shell.size_bytes;
+            shell.raw = String::new();
+            shell.text_body = None;
+            shell.html_body = None;
+            for att in &mut shell.attachments { att.data = vec![]; }
+            self.total_size_bytes += size_bytes;
+            self.emails.insert(shell.id, shell);
+        } else {
+            self.total_size_bytes += email.size_bytes;
+            self.emails.insert(email.id, email);
+        }
+
         self.enforce_limits();
         Ok(())
     }
 
-    /// Removes emails that exceed the configured age or count limits.
+    /// Removes emails that exceed the configured age, count, or size limits.
     /// Called on save, on mbox reload, and periodically (once per hour).
     /// Performs at most one mbox rewrite per call regardless of how many are removed.
     pub(crate) fn enforce_limits(&mut self) {
@@ -89,25 +163,32 @@ impl EmailStore {
 
         if self.max_age_hours > 0 {
             let cutoff = Utc::now() - Duration::hours(self.max_age_hours as i64);
-            let to_remove: Vec<Uuid> = self.emails
+            let to_remove: Vec<Uuid> = self
+                .emails
                 .values()
                 .filter(|e| e.received_at < cutoff)
                 .map(|e| e.id)
                 .collect();
             for id in to_remove {
-                self.emails.shift_remove(&id);
+                if let Some(removed) = self.emails.shift_remove(&id) {
+                    self.total_size_bytes =
+                        self.total_size_bytes.saturating_sub(removed.size_bytes);
+                }
             }
         }
 
         if self.max_emails > 0 {
             while self.emails.len() > self.max_emails {
-                self.emails.shift_remove_index(0);
+                if let Some((_, removed)) = self.emails.shift_remove_index(0) {
+                    self.total_size_bytes =
+                        self.total_size_bytes.saturating_sub(removed.size_bytes);
+                }
             }
         }
 
         if self.emails.len() < initial_len {
             if let Some(ref dir) = self.disk {
-                if let Err(e) = rewrite_mbox(dir, &self.emails) {
+                if let Err(e) = rewrite_mbox_filtered(dir, &self.emails) {
                     tracing::warn!("Failed to rewrite mbox after limit enforcement: {e}");
                 }
                 if let Err(e) = persist_state(dir, &self.emails) {
@@ -122,8 +203,65 @@ impl EmailStore {
         self.emails.values().rev().map(EmailSummary::from).collect()
     }
 
-    pub fn get(&self, id: Uuid) -> Option<&Email> {
-        self.emails.get(&id)
+    /// Returns the full email, reading from disk in disk mode.
+    /// In memory mode, clones the in-memory Email directly.
+    pub fn get_full(&self, id: Uuid) -> anyhow::Result<Option<Email>> {
+        match &self.disk {
+            None => Ok(self.emails.get(&id).cloned()),
+            Some(dir) => {
+                let shell = match self.emails.get(&id) {
+                    Some(s) => s,
+                    None => return Ok(None),
+                };
+                for (raw, received_at, entry_id) in load_mbox_messages(dir)? {
+                    if entry_id == id {
+                        let mut email =
+                            parse_email(&raw, &shell.from, shell.to.clone(), received_at)?;
+                        email.id = id;
+                        email.read = shell.read;
+                        return Ok(Some(email));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Returns `(current_bytes, max_bytes)` for the capacity bar.
+    /// When max_size is set, max_bytes is the configured limit.
+    /// Otherwise: available RAM (memory mode) or available disk space (disk mode).
+    pub fn capacity(&self) -> (u64, u64) {
+        let current = self.total_size_bytes as u64;
+
+        if self.max_size_mb > 0 {
+            return (current, self.max_size_mb as u64 * 1024 * 1024);
+        }
+
+        // Dynamic limit: ask the OS.
+        if let Some(ref dir) = self.disk {
+            use sysinfo::Disks;
+            let disks = Disks::new_with_refreshed_list();
+            // Find the disk whose mount point is the longest prefix of our storage dir.
+            let dir_str = dir.to_string_lossy();
+            let best = disks
+                .iter()
+                .filter_map(|d| {
+                    let mp = d.mount_point().to_string_lossy();
+                    if dir_str.starts_with(mp.as_ref()) {
+                        Some((mp.len(), d.available_space()))
+                    } else {
+                        None
+                    }
+                })
+                .max_by_key(|(len, _)| *len);
+            let avail = best.map(|(_, space)| space).unwrap_or(0);
+            (current, current + avail)
+        } else {
+            use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+            let sys =
+                System::new_with_specifics(RefreshKind::new().with_memory(MemoryRefreshKind::new().with_ram()));
+            (current, current + sys.available_memory())
+        }
     }
 
     /// Returns true if the email was found and marked read.
@@ -147,9 +285,10 @@ impl EmailStore {
     /// Removes the email from memory and rewrites the mbox without it.
     /// Returns true if the email was found and removed.
     pub fn delete(&mut self, id: Uuid) -> bool {
-        if self.emails.shift_remove(&id).is_some() {
+        if let Some(removed) = self.emails.shift_remove(&id) {
+            self.total_size_bytes = self.total_size_bytes.saturating_sub(removed.size_bytes);
             if let Some(ref dir) = self.disk {
-                if let Err(e) = rewrite_mbox(dir, &self.emails) {
+                if let Err(e) = rewrite_mbox_filtered(dir, &self.emails) {
                     tracing::warn!("Failed to rewrite mbox after delete: {e}");
                 }
                 if let Err(e) = persist_state(dir, &self.emails) {
@@ -160,14 +299,6 @@ impl EmailStore {
         } else {
             false
         }
-    }
-
-    pub fn get_attachment(&self, email_id: Uuid, filename: &str) -> Option<&Attachment> {
-        self.emails
-            .get(&email_id)?
-            .attachments
-            .iter()
-            .find(|a| a.filename == filename)
     }
 }
 
@@ -299,17 +430,34 @@ fn append_mbox(dir: &PathBuf, email: &Email) -> anyhow::Result<()> {
     write_mbox_entry(&mut file, email)
 }
 
-/// Rewrites <dir>/devmail.mbox from the current in-memory email set,
-/// atomically replacing the file via a temp file + rename.
-fn rewrite_mbox(dir: &PathBuf, emails: &IndexMap<Uuid, Email>) -> anyhow::Result<()> {
+/// Rewrites <dir>/devmail.mbox, keeping only entries whose UUIDs are present
+/// in `kept`. Reads raw content from the existing mbox rather than from memory,
+/// making it safe to call in disk mode (where Email.raw is empty).
+fn rewrite_mbox_filtered(dir: &PathBuf, kept: &IndexMap<Uuid, Email>) -> anyhow::Result<()> {
     let path = dir.join("devmail.mbox");
     let tmp = dir.join("devmail.mbox.tmp");
+
+    let entries = load_mbox_messages(dir)?;
 
     {
         let mut file = std::fs::File::create(&tmp)
             .with_context(|| format!("creating temp mbox at {}", tmp.display()))?;
-        for email in emails.values() {
-            write_mbox_entry(&mut file, email)?;
+
+        for (raw, received_at, id) in &entries {
+            if let Some(shell) = kept.get(id) {
+                let date_str = received_at.format("%a %b %e %H:%M:%S %Y").to_string();
+                let from_addr =
+                    if shell.from.is_empty() { "MAILER-DAEMON" } else { &shell.from };
+                writeln!(file, "From {} {}", from_addr, date_str)?;
+                writeln!(file, "X-DevMail-ID: {}", id)?;
+                for line in raw.lines() {
+                    if line.starts_with("From ") {
+                        write!(file, ">")?;
+                    }
+                    writeln!(file, "{}", line)?;
+                }
+                writeln!(file)?;
+            }
         }
     }
 

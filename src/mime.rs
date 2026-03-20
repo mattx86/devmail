@@ -95,6 +95,7 @@ pub fn parse_email(
     Ok(Email {
         id: Uuid::new_v4(),
         received_at,
+        size_bytes: raw.len(),
         raw: raw.to_string(),
         from,
         to,
@@ -112,6 +113,7 @@ pub fn make_raw_email(raw: String, mail_from: String, received_at: DateTime<Utc>
     Email {
         id: Uuid::new_v4(),
         received_at,
+        size_bytes: raw.len(),
         from: mail_from,
         to: vec![],
         cc: vec![],

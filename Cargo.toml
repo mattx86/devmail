@@ -1,6 +1,6 @@
 [package]
 name        = "devmail"
-version     = "1.0.1"
+version     = "1.0.2"
 edition     = "2021"
 authors     = ["Matt Smith"]
 license     = "MIT"
@@ -26,6 +26,7 @@ anyhow             = { version = "=1.0.86" }
 tracing            = { version = "=0.1.40" }
 tracing-subscriber = { version = "=0.3.18", features = ["env-filter"] }
 if-addrs           = { version = "=0.15.0" }
+sysinfo            = { version = "0.32",    default-features = false, features = ["system", "disk"] }
 
 [profile.release]
 opt-level     = 3

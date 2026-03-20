@@ -1,5 +1,5 @@
 use crate::mime;
-use crate::store::SharedStore;
+use crate::store::{SaveError, SharedStore};
 use super::parser::{parse_command, SmtpCommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -22,10 +22,17 @@ pub struct SmtpSession {
     peer_addr: std::net::SocketAddr,
     reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
     writer: tokio::net::tcp::OwnedWriteHalf,
+    /// Maximum accepted message size in bytes (0 = unlimited).
+    max_size_bytes: usize,
 }
 
 impl SmtpSession {
-    pub fn new(stream: TcpStream, store: SharedStore, peer_addr: std::net::SocketAddr) -> Self {
+    pub fn new(
+        stream: TcpStream,
+        store: SharedStore,
+        peer_addr: std::net::SocketAddr,
+        max_size_bytes: usize,
+    ) -> Self {
         let (read_half, write_half) = stream.into_split();
         SmtpSession {
             state: SmtpState::Connected,
@@ -33,6 +40,7 @@ impl SmtpSession {
             peer_addr,
             reader: BufReader::new(read_half),
             writer: write_half,
+            max_size_bytes,
         }
     }
 
@@ -75,7 +83,14 @@ impl SmtpSession {
         match cmd {
             SmtpCommand::Ehlo(id) | SmtpCommand::Helo(id) => {
                 self.state = SmtpState::Greeted { client_id: id };
-                self.write_response("250-devmail\r\n250 8BITMIME\r\n").await?;
+                let mut resp = String::from("250-devmail\r\n");
+                if self.max_size_bytes > 0 {
+                    resp.push_str(&format!("250-SIZE {}\r\n", self.max_size_bytes));
+                }
+                resp.push_str("250-PIPELINING\r\n");
+                resp.push_str("250-SMTPUTF8\r\n");
+                resp.push_str("250 8BITMIME\r\n");
+                self.write_response(&resp).await?;
             }
 
             SmtpCommand::Rset => {
@@ -88,7 +103,7 @@ impl SmtpSession {
                 self.write_response("250 OK\r\n").await?;
             }
 
-            SmtpCommand::MailFrom(addr) => {
+            SmtpCommand::MailFrom { addr, declared_size } => {
                 let client_id = match &self.state {
                     SmtpState::Greeted { client_id } => client_id.clone(),
                     SmtpState::InTransaction { client_id, .. } => client_id.clone(),
@@ -97,6 +112,13 @@ impl SmtpSession {
                         return Ok(false);
                     }
                 };
+                // RFC 1870: reject immediately if the declared size exceeds our limit.
+                if let Some(sz) = declared_size {
+                    if self.max_size_bytes > 0 && sz > self.max_size_bytes {
+                        self.write_response("552 Message exceeds maximum permitted size\r\n").await?;
+                        return Ok(false);
+                    }
+                }
                 self.state = SmtpState::InTransaction {
                     client_id,
                     mail_from: addr,
@@ -148,23 +170,24 @@ impl SmtpSession {
                 );
                 let raw = format!("{received_header}{body}");
 
-                match mime::parse_email(&raw, &mail_from, rcpt_to, received_at) {
-                    Ok(email) => {
-                        let mut store = self.store.write().await;
-                        if let Err(e) = store.save(email) {
-                            tracing::error!("Failed to save email: {e}");
-                        }
-                    }
+                let email = match mime::parse_email(&raw, &mail_from, rcpt_to, received_at) {
+                    Ok(e) => e,
                     Err(e) => {
                         tracing::warn!("MIME parse warning: {e}");
-                        // Store a minimal email with the raw content so nothing is lost.
-                        let email = mime::make_raw_email(raw, mail_from, received_at);
-                        let mut store = self.store.write().await;
-                        let _ = store.save(email);
+                        mime::make_raw_email(raw, mail_from, received_at)
                     }
-                }
+                };
 
-                self.write_response("250 OK: message accepted\r\n").await?;
+                let save_result = self.store.write().await.save(email);
+                let response = match save_result {
+                    Ok(()) => "250 OK: message accepted\r\n",
+                    Err(SaveError::TooBig) => "552 Message exceeds maximum permitted size\r\n",
+                    Err(SaveError::Io(e)) => {
+                        tracing::error!("Failed to save email: {e}");
+                        "451 Requested action aborted: error in processing\r\n"
+                    }
+                };
+                self.write_response(response).await?;
                 self.state = SmtpState::Greeted { client_id };
             }
 
